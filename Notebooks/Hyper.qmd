@@ -1,0 +1,161 @@
+--- 
+title: "Hypertension Indicators"
+format: 
+  dashboard:
+    theme: cosmo
+    logo: BSOLICB.png
+    nav-buttons: 
+        - icon: github
+          href: https://github.com/
+        - icon: house-door-fill
+        - icon: info-circle
+server: shiny
+execute:
+    freeze: true
+---
+
+```{python}
+#| context: setup
+import pandas as pd
+import pickle
+
+with open('Hypertension_Indicators_ICBLevel.pkl', 'rb') as file:
+    loaded_result = pickle.load(file)
+    
+df = pd.DataFrame(loaded_result).copy()
+
+df.loc[df['MetricCategoryTypeName'] == 'Learning Disability', 'MetricCategoryName'] = df.loc[df['MetricCategoryTypeName'] == 'Learning Disability', 'MetricCategoryName'].replace({
+    'People with a learning disability': 'Yes',
+    'People without a learning disability': 'No'
+})
+
+# Specify orders for some ordinal categories
+orders = { 'Age group': [ '18-39', '40-59', '60-79', '80+'],
+           'Deprivation quintile': ['1 - most deprived', '2', '3', '4', '5 - least deprived']}
+
+```
+```{python}
+#| label: pre-processing
+
+from datetime import datetime
+
+# Function to parse the custom date format (e.g., 'To June 2023')
+def parse_to_date(time_period_str):
+    parts = time_period_str.split()  # Split the string
+    month = parts[1]                # Extract the month
+    year = parts[2]                 # Extract the year
+    return datetime.strptime(f'{year} {month}', '%Y %B')  # Parse to datetime object
+
+```
+## {.sidebar}
+
+```{python}
+#| label: dropdown
+
+from shiny import render, ui
+
+# Creating the dropdown for hypertension indicators
+indicator_choices = list(df["IndicatorShortName"].value_counts().index)
+ui.input_select(
+    "indicator", label="Indicators:", 
+    choices=indicator_choices
+)
+
+# Creating the dropdown for inequality markers
+inequality_marker_choices = list(df['MetricCategoryTypeName'].value_counts().index)
+ui.input_select(
+    "marker", label="Inequality Marker:", 
+    choices=inequality_marker_choices
+)
+
+# Creating the dropdown for time periods
+time_periods = list(df['TimePeriodName'].value_counts().index)
+
+# Convert each time period string to a datetime object
+parsed_dates = [(parse_to_date(tp), tp) for tp in time_periods]
+
+# Sort the list of tuples based on the datetime objects
+sorted_dates = sorted(parsed_dates, key=lambda x: x[0])
+
+# Extract the sorted time period strings
+sorted_time_periods = [tp[1] for tp in sorted_dates]
+
+ui.input_select(
+    "period", label="Time Period:",
+    choices=sorted_time_periods
+)
+```
+
+```{python}
+from shiny import reactive 
+# Reactive function to filter data based on selections
+@reactive.Calc
+def filtered_data():
+    selected_indicator = input.indicator()
+    selected_marker = input.marker()
+    selected_period = input.period()
+    return df[(df["IndicatorShortName"] == selected_indicator) & 
+              (df["MetricCategoryTypeName"] == selected_marker) &
+              (df["TimePeriodName"] == selected_period)]
+    
+```
+## Column
+
+```{python}
+#| label: barplot-function
+
+from shinywidgets import render_widget
+import plotly.express as px
+
+# Function to create bar plot
+
+@render_widget
+def plot_barplot(data):
+    df = filtered_data()
+    
+    # Aggregate data and calculate percentage
+    aggregated_data = filtered_data.groupby('MetricCategoryName').agg(
+        Total_Numerator=('Numerator', 'sum'),
+        Total_Denominator=('Denominator', 'sum')
+    ).reset_index()
+    
+    # Calculate the percentage value with 2 decimal places
+    aggregated_data['Value (%)'] = ((aggregated_data['Total_Numerator'] / aggregated_data['Total_Denominator']) * 100).round(2)
+
+    # Format 'Numerator' and 'Denominator' with commas for display in hover data
+    aggregated_data['Numerator'] = aggregated_data['Total_Numerator'].astype(int).apply(lambda x: f'{x:,}')
+    aggregated_data['Denominator'] = aggregated_data['Total_Denominator'].astype(int).apply(lambda x: f'{x:,}')
+
+    # Order x-axis based on the dictionary provided
+    x_order = orders.get('MetricCategoryTypeName', None)
+    
+    # Capitalize each word in the title
+    title = f"Indicator by {'MetricCategoryTypeName'}".title()
+
+    # Create the bar plot with hover data
+    fig = px.bar(aggregated_data, x='MetricCategoryName', y='Value (%)', text='Value (%)',
+                 color="Value (%)",
+                 color_continuous_scale=px.colors.sequential.Cividis_r,
+                 labels={x_axis: 'MetricCategoryTypeName', 'Value (%)': 'Value (%)'},
+                 title=title,
+                 hover_data=["Numerator", "Denominator"])
+
+    # Reorder x-axis if order is specified
+    if x_order is not None:
+        fig.update_xaxes(categoryorder='array', categoryarray=x_order)
+
+    # Rotate x-axis labels & hide y-axis ticks
+    fig.update_layout(xaxis_tickangle=-45, 
+                      showlegend=False,
+                     coloraxis_showscale=False)
+    fig.update_yaxes(showticklabels=False, title="")
+
+    # Add annotations with percentage sign and adjust layout
+    fig.update_traces(texttemplate='%{text:.2f}%', textposition='outside')
+    
+    return fig
+    
+```
+
+
+
